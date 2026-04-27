@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ARGO Loader</title>
+  <style>
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: #efefef;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    .argo-loader {
+      width: 200px;
+      height: 200px;
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Drop this <svg> wherever you want the loader. The <script> below
+         drives it. Width/height are set via CSS on .argo-loader. -->
+  <svg class="argo-loader" viewBox="0 0 200 200" role="status" aria-label="Loading" xmlns="http://www.w3.org/2000/svg"
+    shape-rendering="geometricPrecision"></svg>
+
+  <script>
+    (function () {
+      // ────────────────────────────────────────────────────────────
+      // ARGO loader — single-file vanilla JS version.
+      // Tunables: change these to taste.
+      // ────────────────────────────────────────────────────────────
+      var CONFIG = {
+        durationSec: 5,    // seconds per cycle
+        gapWidth: 65,   // gap arc length in 1/1000ths of perimeter
+        numGaps: 2,    // 2 or 3
+        strokeWidth: 9,    // outline thickness, in viewBox units
+        cutAngle: -30,  // gap-edge tilt from perpendicular, degrees
+        fill: '#111111',
+      };
+
+      // Triangle vertices (must match the viewBox = 0 0 200 200)
+      var A = { x: 100, y: 30 };
+      var B = { x: 176, y: 170 };
+      var C = { x: 24, y: 170 };
+      var SIDES = [
+        { from: A, to: B },
+        { from: B, to: C },
+        { from: C, to: A },
+      ];
+      var SIDE_LEN = SIDES.map(function (s) {
+        return Math.hypot(s.to.x - s.from.x, s.to.y - s.from.y);
+      });
+      var PERIMETER = SIDE_LEN.reduce(function (a, b) { return a + b; }, 0);
+      var SIDE_START = SIDE_LEN.reduce(function (acc, len, i) {
+        acc.push(i === 0 ? 0 : acc[i - 1] + SIDE_LEN[i - 1]);
+        return acc;
+      }, []);
+
+      function arcToPoint(s) {
+        s = ((s % PERIMETER) + PERIMETER) % PERIMETER;
+        for (var i = SIDES.length - 1; i >= 0; i--) {
+          if (s >= SIDE_START[i]) {
+            var local = s - SIDE_START[i];
+            var from = SIDES[i].from, to = SIDES[i].to;
+            var t = local / SIDE_LEN[i];
+            return {
+              side: i, local: local,
+              x: from.x + (to.x - from.x) * t,
+              y: from.y + (to.y - from.y) * t,
+              tx: (to.x - from.x) / SIDE_LEN[i],
+              ty: (to.y - from.y) / SIDE_LEN[i],
+            };
+          }
+        }
+        return null;
+      }
+
+      function lineIntersect(p1, d1, p2, d2) {
+        var det = d1.x * d2.y - d1.y * d2.x;
+        if (Math.abs(det) < 1e-9) return null;
+        var dx = p2.x - p1.x, dy = p2.y - p1.y;
+        var t = (dx * d2.y - dy * d2.x) / det;
+        return { x: p1.x + d1.x * t, y: p1.y + d1.y * t };
+      }
+
+      function spanPolygon(s0, s1, halfW, cutAngleDeg) {
+        var angRad = (cutAngleDeg * Math.PI) / 180;
+        var spine = [];
+        var startInfo = arcToPoint(s0);
+        spine.push({ s: s0, x: startInfo.x, y: startInfo.y, tx: startInfo.tx, ty: startInfo.ty, isEnd: 'start' });
+
+        var corners = [];
+        for (var k = 0; k < SIDES.length; k++) {
+          for (var cycle = 0; cycle <= 1; cycle++) {
+            var cs = SIDE_START[k] + cycle * PERIMETER;
+            if (cs > s0 && cs < s1) corners.push({ s: cs, sideIdx: k });
+          }
+        }
+        corners.sort(function (a, b) { return a.s - b.s; });
+        corners.forEach(function (c) {
+          var prevIdx = (c.sideIdx + SIDES.length - 1) % SIDES.length;
+          var prev = SIDES[prevIdx], next = SIDES[c.sideIdx];
+          var inTx = (prev.to.x - prev.from.x) / SIDE_LEN[prevIdx];
+          var inTy = (prev.to.y - prev.from.y) / SIDE_LEN[prevIdx];
+          var outTx = (next.to.x - next.from.x) / SIDE_LEN[c.sideIdx];
+          var outTy = (next.to.y - next.from.y) / SIDE_LEN[c.sideIdx];
+          spine.push({
+            s: c.s, x: next.from.x, y: next.from.y,
+            inTx: inTx, inTy: inTy, outTx: outTx, outTy: outTy,
+            isCorner: true,
+          });
+        });
+        var endInfo = arcToPoint(s1);
+        spine.push({ s: s1, x: endInfo.x, y: endInfo.y, tx: endInfo.tx, ty: endInfo.ty, isEnd: 'end' });
+
+        var left = [], right = [];
+        spine.forEach(function (p) {
+          if (p.isCorner) {
+            var inN = { x: -p.inTy, y: p.inTx };
+            var outN = { x: -p.outTy, y: p.outTx };
+            var lP1 = { x: p.x + inN.x * halfW, y: p.y + inN.y * halfW };
+            var lP2 = { x: p.x + outN.x * halfW, y: p.y + outN.y * halfW };
+            var rP1 = { x: p.x - inN.x * halfW, y: p.y - inN.y * halfW };
+            var rP2 = { x: p.x - outN.x * halfW, y: p.y - outN.y * halfW };
+            var lDir1 = { x: p.inTx, y: p.inTy };
+            var lDir2 = { x: p.outTx, y: p.outTy };
+            var lm = lineIntersect(lP1, lDir1, lP2, lDir2) || lP1;
+            var rm = lineIntersect(rP1, lDir1, rP2, lDir2) || rP1;
+            left.push([lm.x, lm.y]);
+            right.push([rm.x, rm.y]);
+          } else {
+            var cosA = Math.cos(angRad);
+            var sinA = Math.sin(angRad);
+            var lpx = -p.ty, lpy = p.tx;
+            var nx = lpx * cosA - lpy * sinA;
+            var ny = lpx * sinA + lpy * cosA;
+            var scale = halfW / Math.max(0.2, Math.abs(cosA));
+            left.push([p.x + nx * scale, p.y + ny * scale]);
+            right.push([p.x - nx * scale, p.y - ny * scale]);
+          }
+        });
+
+        var pts = left.concat(right.slice().reverse());
+        return pts.map(function (p) { return p[0].toFixed(2) + ',' + p[1].toFixed(2); }).join(' ');
+      }
+
+      function visibleSpans(gapStarts, gapWidthArc) {
+        var sorted = gapStarts.slice().sort(function (a, b) { return a - b; });
+        var spans = [];
+        for (var i = 0; i < sorted.length; i++) {
+          var gapEnd = sorted[i] + gapWidthArc;
+          var nextGapStart = i === sorted.length - 1
+            ? sorted[0] + PERIMETER
+            : sorted[i + 1];
+          spans.push([gapEnd, nextGapStart]);
+        }
+        return spans;
+      }
+
+      // Mount + animate every <svg.argo-loader> on the page
+      var SVG_NS = 'http://www.w3.org/2000/svg';
+      var svgs = document.querySelectorAll('svg.argo-loader');
+      Array.prototype.forEach.call(svgs, function (svg) {
+        var polys = [];
+        for (var i = 0; i < CONFIG.numGaps; i++) {
+          var p = document.createElementNS(SVG_NS, 'polygon');
+          p.setAttribute('fill', CONFIG.fill);
+          svg.appendChild(p);
+          polys.push(p);
+        }
+
+        var start = performance.now();
+        function tick(now) {
+          var t = ((now - start) / 1000) % CONFIG.durationSec;
+          var N = Math.max(1, CONFIG.numGaps);
+          var gapWidthArc = (CONFIG.gapWidth / 1000) * PERIMETER;
+          var segment = PERIMETER / N;
+          var phase = (t / CONFIG.durationSec) * segment;
+          var gapStarts = [];
+          for (var i = 0; i < N; i++) {
+            gapStarts.push((i * segment + phase) % PERIMETER);
+          }
+          var spans = visibleSpans(gapStarts, gapWidthArc);
+          var halfW = CONFIG.strokeWidth / 2;
+          for (var j = 0; j < spans.length; j++) {
+            polys[j].setAttribute(
+              'points',
+              spanPolygon(spans[j][0], spans[j][1], halfW, CONFIG.cutAngle)
+            );
+          }
+          requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+      });
+    })();
+  </script>
+</body>
+
+</html>
